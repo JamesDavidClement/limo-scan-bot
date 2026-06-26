@@ -18,8 +18,7 @@ def log_incoming_activity(sender, message_body):
 
 def get_latest_driver_manifest(query=""):
     try:
-        # 🔗 UPDATED: Pointing directly to your active live report link
-        url = "https://reports.mylimobiz.com/SharedReport/CC395C73-8F55-4FCE-A397-BC2866AD0C55"
+        url = "https://mylimobiz.com"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -29,11 +28,9 @@ def get_latest_driver_manifest(query=""):
         lines = [line.strip() for line in text.splitlines() if line.strip()]
 
         q = query.lower().strip()
-        
-        # 📆 Auto-calculates today's date structure dynamically
         today_str = datetime.now().strftime("%m/%d/%Y")
 
-        # 1. Full Manifest (UNTOUCHED WORKING BASE)
+        # 1. Full Manifest (UNTOUCHED BASE)
         if q in ["manifest", "all", "list"]:
             entries = []
             i = 0
@@ -52,7 +49,7 @@ def get_latest_driver_manifest(query=""):
                 i += 1
             return "\n".join(entries[:25]) if entries else "No manifest entries found today."
 
-        # 2. SHUTTLE command (UNTOUCHED WORKING BASE)
+        # 2. SHUTTLE command (UNTOUCHED BASE)
         if "shuttle" in q:
             matches = []
             current = []
@@ -73,7 +70,7 @@ def get_latest_driver_manifest(query=""):
                     current = []
             return "\n\n---\n\n".join(matches) if matches else f"No shuttles found listed for {today_str}."
 
-        # 3. PAX NAME command (SLOWLY BUILT TO EXTRACT: PAX NAME / TIME / DRIVER)
+        # 3. FIXED PAX NAME command (Pulls strictly from the 3 specified columns)
         matches = []
         current = []
         for line in lines:
@@ -84,24 +81,25 @@ def get_latest_driver_manifest(query=""):
                     driver = "N/A"
                     phone = ""
                     pu_time = "N/A"
-                    pax_name = "Passenger"
+                    pax_name = "Unknown Passenger"
                     
-                    # 🔍 Scan the block data text strings to pick column matches
+                    # Lock data markers for Time and Driver columns dynamically
                     for l in current:
-                        # Extract Time Format (e.g. 09:00 AM)
+                        # Column 1: Time Match
                         if re.search(r'\d{2}:\d{2}\s*(?:AM|PM)', l, re.IGNORECASE):
                             pu_time = l
-                        # Extract Driver Phone Number & Driver Name sitting right above it
+                        # Column 6: Driver Phone Match
                         if re.search(r'\(\d{3}\)', l):
                             phone = l
                             driver = current[current.index(l)-1] if current.index(l) > 0 else "N/A"
                     
-                    # Target the Passenger Name string by looking for the requested query word
+                    # Column 3: Locate any row item matching your search that isn't a timestamp or driver
                     for l in current:
                         if q in l.lower() and not re.search(r'\(\d{3}\)', l) and l != driver and ":" not in l:
                             pax_name = l
                             break
                             
+                    # Clean format template containing ONLY your 3 required columns
                     matches.append(f"Pax: {pax_name}\nTime: {pu_time}\nDriver: {driver} {phone}")
                 current = []
                 

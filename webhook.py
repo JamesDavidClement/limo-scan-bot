@@ -7,6 +7,9 @@ from datetime import datetime
 
 app = Flask(__name__)
 
+# 🌐 Global variable fallback link cache
+CURRENT_MANIFEST_URL = "https://mylimobiz.com"
+
 def log_incoming_activity(sender, message_body):
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -17,10 +20,10 @@ def log_incoming_activity(sender, message_body):
         print(f"❌ Logging error: {e}")
 
 def get_latest_driver_manifest(query=""):
+    global CURRENT_MANIFEST_URL
     try:
-        url = "https://mylimobiz.com"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=15)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        resp = requests.get(CURRENT_MANIFEST_URL, headers=headers, timeout=15)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, 'html.parser')
@@ -28,7 +31,6 @@ def get_latest_driver_manifest(query=""):
         lines = [line.strip() for line in text.splitlines() if line.strip()]
 
         q = query.lower().strip()
-        # Generates today's date formatted to match web data rules (e.g., 06/26/2026)
         today_str = datetime.now().strftime("%m/%d/%Y")
 
         # Slice layout array into structured distinct trip records
@@ -44,32 +46,30 @@ def get_latest_driver_manifest(query=""):
         if current_block:
             blocks.append(current_block)
 
-        # Bug Fix: Properly checks the first index string of the block array for today's date matching
+        # ✅ FIXED: Now checks index 0 (the date string inside the block) instead of checking the array list object
         today_blocks = [b for b in blocks if b and b[0] == today_str]
 
-        # 1. MANIFEST COMMAND (Short & Simple: Pax Name + Driver Name & Number)
+        # 1. MANIFEST COMMAND (Passenger Name + Driver Name & Number Only)
         if q in ["manifest", "all", "list"]:
             entries = []
             for b in today_blocks:
                 driver = "N/A"
                 phone = ""
-                pax_name = "Unknown Pax"
+                pax_name = "Unknown Passenger"
                 
-                # Scan block for phone indicator index
                 for i, l in enumerate(b):
                     if re.search(r'\(\d{3}\)', l):
                         phone = l
                         driver = b[i-1] if i > 0 else "N/A"
                         break
                 
-                # Slices passenger label sitting at index row position 4
                 if len(b) > 4:
-                    pax_name = b[4]
+                    pax_name = b[4] # Safely pulls the Passenger/Trip text row coordinate
                 
                 entries.append(f"Pax: {pax_name}\nDriver: {driver} {phone}")
             return "\n\n---\n\n".join(entries[:25]) if entries else f"No manifest records available for {today_str}."
 
-        # 2. SHUTTLE COMMAND (Left completely untouched)
+        # 2. SHUTTLE COMMAND (Untouched)
         if "shuttle" in q:
             matches = []
             for b in today_blocks:
@@ -86,14 +86,14 @@ def get_latest_driver_manifest(query=""):
                     matches.append(f"{service}\nDriver: {driver} {phone}")
             return "\n\n---\n\n".join(matches) if matches else f"No shuttles found listed for {today_str}."
 
-        # 3. PAX NAME COMMAND (Pax Name + Pickup Time + Driver Details Only)
+        # 3. PAX NAME COMMAND (Passenger Name + Departure Time + Driver Details Only)
         matches = []
         for b in today_blocks:
             block_text = "\n".join(b).lower()
             if q in block_text:
                 driver = "N/A"
                 phone = ""
-                pu_time = b[2] if len(b) > 2 else "N/A"  # Pulls raw departure time row safely
+                pu_time = b[2] if len(b) > 2 else "N/A"  # Slices pickup time column string cleanly
                 pax_name = b[4] if len(b) > 4 else "Unknown Passenger"
                 
                 for i, l in enumerate(b):
@@ -114,12 +114,22 @@ def get_latest_driver_manifest(query=""):
 
 @app.route("/webhook", methods=['GET', 'POST'])
 def webhook():
+    global CURRENT_MANIFEST_URL
     incoming_body = request.values.get('Body', '').strip()
     incoming_sender = request.values.get('From', 'UNKNOWN_NUMBER')
     
     log_incoming_activity(incoming_sender, incoming_body)
     print(f"Incoming SMS from {incoming_sender}: {incoming_body}")
     
+    # 🔄 AUTOMATION TOOL: Overwrite the active web URL remotely via a simple text message
+    if incoming_body.lower().startswith("url:"):
+        new_url = incoming_body[4:].strip()
+        if new_url.startswith("http"):
+            CURRENT_MANIFEST_URL = new_url
+            resp = MessagingResponse()
+            resp.message(f"✅ Bot target manifest URL successfully updated to: {CURRENT_MANIFEST_URL}")
+            return str(resp)
+
     resp = MessagingResponse()
     info = get_latest_driver_manifest(incoming_body)
     resp.message(info)

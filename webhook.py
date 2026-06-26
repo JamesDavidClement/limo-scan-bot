@@ -48,15 +48,11 @@ def parse_manifest_rows(soup):
     data_rows = table.find_all('tr')[1:]
     for tr in data_rows:
         tds = tr.find_all('td')
-        if len(tds) < 7:
-            continue
+        if len(tds) < 7: continue
         row = {
             'pu_date_conf': tds[0].get_text(strip=True).replace('\n', ' '),
             'pu_time_do': tds[1].get_text(strip=True).replace('\n', ' '),
-            'routing': tds[2].get_text(strip=True),
             'passenger_trip': tds[3].get_text(strip=True).replace('\n', ' | '),
-            'phone_service': tds[4].get_text(strip=True).replace('\n', ' | '),
-            'vehicle': tds[5].get_text(strip=True),
             'driver': tds[6].get_text(strip=True).replace('\n', ' ')
         }
         rows.append(row)
@@ -65,23 +61,20 @@ def parse_manifest_rows(soup):
 def get_shuttles(rows):
     shuttles = [row for row in rows if any(x in row['passenger_trip'].lower() for x in ['shuttle', 'standby', 'media', 'pi', 'dwc'])]
     if not shuttles:
-        return "No shuttles found for today."
-    response = [f"🚌 {row['passenger_trip']}\n⏰ {row['pu_time_do']}\n👤 {row['driver']}" for row in shuttles]
-    return "\n\n---\n\n".join(response)
+        return "No shuttles found today."
+    return "\n\n---\n\n".join([f"🚌 {r['passenger_trip']}\n⏰ {r['pu_time_do']}\n👤 {r['driver']}" for r in shuttles])
 
-def get_manifest_summary(rows, limit=25):
+def get_manifest_summary(rows):
     if not rows:
-        return "No manifest entries found today."
-    response = [f"📋 {row['passenger_trip']}\n⏰ {row['pu_time_do']}\n👤 {row['driver']}" for row in rows[:limit]]
-    return "\n\n---\n\n".join(response)
+        return "No entries found."
+    return "\n\n---\n\n".join([f"📋 {r['passenger_trip']}\n⏰ {r['pu_time_do']}\n👤 {r['driver']}" for r in rows[:25]])
 
 def find_by_passenger(rows, query):
     q = query.lower().strip()
-    matches = [row for row in rows if q in row['passenger_trip'].lower() or q in row['routing'].lower()]
+    matches = [row for row in rows if q in row['passenger_trip'].lower()]
     if not matches:
-        return f"No records found for '{query}' today."
-    response = [f"👤 {row['passenger_trip']}\n⏰ {row['pu_time_do']}\n👤 {row['driver']}" for row in matches]
-    return "\n\n---\n\n".join(response)
+        return f"No match for '{query}'."
+    return "\n\n---\n\n".join([f"👤 {r['passenger_trip']}\n⏰ {r['pu_time_do']}\n👤 {r['driver']}" for r in matches])
 
 @app.route("/webhook", methods=['GET', 'POST'])
 def webhook():
@@ -92,16 +85,23 @@ def webhook():
     resp = MessagingResponse()
     
     try:
-        # Special command to update URL
-        if incoming_body.lower().startswith("url:") or incoming_body.startswith("http"):
-            new_url = incoming_body if incoming_body.startswith("http") else incoming_body[4:].strip()
-            if save_url(new_url):
-                resp.message(f"✅ Manifest URL updated successfully!\nNow using:\n{new_url}")
-            else:
-                resp.message("❌ Invalid URL format.")
+        if incoming_body.lower() in ["url", "status", "current"]:
+            current = get_current_url()
+            soup = fetch_manifest(current)
+            rows = parse_manifest_rows(soup)
+            resp.message(f"✅ Current URL:\n{current}\n\nEntries loaded: {len(rows)}")
             return str(resp)
         
-        # Normal queries
+        # Update URL
+        if incoming_body.lower().startswith(("url:", "https://")):
+            new_url = incoming_body[4:].strip() if incoming_body.lower().startswith("url:") else incoming_body
+            if save_url(new_url):
+                resp.message(f"✅ URL Updated Successfully!\nNow using:\n{new_url}\n\nText 'status' to verify.")
+            else:
+                resp.message("❌ Invalid URL.")
+            return str(resp)
+        
+        # Normal commands
         current_url = get_current_url()
         soup = fetch_manifest(current_url)
         rows = parse_manifest_rows(soup)
@@ -116,7 +116,7 @@ def webhook():
             info = find_by_passenger(rows, incoming_body)
             
     except Exception as e:
-        info = f"System Fetch Error: {str(e)[:100]}"
+        info = f"❌ Error: {str(e)[:90]}"
     
     resp.message(info)
     return str(resp)

@@ -18,7 +18,7 @@ def log_incoming_activity(sender, message_body):
 
 def get_latest_driver_manifest(query=""):
     try:
-        url = "https://reports.mylimobiz.com/SharedReport/CC395C73-8F55-4FCE-A397-BC2866AD0C55"
+        url = "https://mylimobiz.com"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -30,12 +30,10 @@ def get_latest_driver_manifest(query=""):
         q = query.lower().strip()
         today_str = datetime.now().strftime("%m/%d/%Y")
 
-        # Group raw layout into individual trip data blocks cleanly
+        # 🧱 Parse raw lines into individual trip blocks cleanly
         blocks = []
         current_block = []
-        
         for line in lines:
-            # When we hit a new date marker, save the old block and start fresh
             if re.match(r'^\d{2}/\d{2}/\d{4}$', line):
                 if current_block:
                     blocks.append(current_block)
@@ -45,27 +43,32 @@ def get_latest_driver_manifest(query=""):
         if current_block:
             blocks.append(current_block)
 
-        # Filter blocks to only include today's current rides
+        # 📆 Filter for today's data blocks only
         today_blocks = [b for b in blocks if b and b[0] == today_str]
 
-        # 1. MANIFEST Command
+        # 1. MANIFEST COMMAND (Short & Simple: Pax/Shuttle Name + Driver Details)
         if q in ["manifest", "all", "list"]:
             entries = []
             for b in today_blocks:
-                block_text = "\n".join(b)
-                # Parse passenger (usually line index 3 or 4 after the date/conf/time keys)
-                pax = b[3] if len(b) > 3 else "Unknown Pax"
                 driver = "N/A"
                 phone = ""
+                pax_name = "Unknown Passenger"
+                
+                # Find driver phone index to lock coordinates
                 for i, l in enumerate(b):
                     if re.search(r'\(\d{3}\)', l):
                         phone = l
                         driver = b[i-1] if i > 0 else "N/A"
+                        
+                        # Passenger name sits right above the "N/A" or Service block columns
+                        if i >= 4:
+                            pax_name = b[i-3]
                         break
-                entries.append(f"Pax: {pax}\nDriver: {driver} {phone}\n")
-            return "\n---\n".join(entries[:25]) if entries else "No manifest entries found today."
+                
+                entries.append(f"Pax: {pax_name}\nDriver: {driver} {phone}")
+            return "\n\n---\n\n".join(entries[:25]) if entries else "No manifest entries found today."
 
-        # 2. SHUTTLE Command
+        # 2. SHUTTLE COMMAND (Left completely untouched)
         if "shuttle" in q:
             matches = []
             for b in today_blocks:
@@ -82,25 +85,30 @@ def get_latest_driver_manifest(query=""):
                     matches.append(f"{service}\nDriver: {driver} {phone}")
             return "\n\n---\n\n".join(matches) if matches else f"No shuttles found listed for {today_str}."
 
-        # 3. PAX NAME Command
+        # 3. PAX NAME COMMAND (Pax Name + Pickup Time + Driver Details Only)
         matches = []
         for b in today_blocks:
             block_text = "\n".join(b).lower()
             if q in block_text:
                 driver = "N/A"
                 phone = ""
-                pax_name = b[3] if len(b) > 3 else "Passenger"
+                pu_time = b[2] if len(b) > 2 else "N/A" # Extracts PU Time column value
+                pax_name = "Unknown Passenger"
+                
                 for i, l in enumerate(b):
                     if re.search(r'\(\d{3}\)', l):
                         phone = l
                         driver = b[i-1] if i > 0 else "N/A"
+                        if i >= 4:
+                            pax_name = b[i-3]
                         break
-                matches.append(f"Pax: {pax_name}\nDriver: {driver}\nPhone: {phone}")
+                
+                matches.append(f"Pax: {pax_name}\nTime: {pu_time}\nDriver: {driver} {phone}")
         
         if matches:
             return "\n\n---\n\n".join(matches)
         else:
-            return f"No driver or passenger found matching '{query}' for today."
+            return f"No records matching '{query}' found for today."
 
     except Exception as e:
         return f"System Fetch Error: {str(e)[:60]}"
@@ -120,3 +128,4 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+

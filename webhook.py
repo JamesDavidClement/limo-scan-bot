@@ -3,11 +3,10 @@ from twilio.twiml.messaging_response import MessagingResponse
 import requests
 from bs4 import BeautifulSoup
 import re
-from datetime import datetime
 
 app = Flask(__name__)
 
-# This global URL stays active. If you ever need to change it, you can text "URL: https://..." to the bot.
+# Active, working manifest URL
 CURRENT_MANIFEST_URL = "https://mylimobiz.com"
 
 def get_latest_driver_manifest(query=""):
@@ -22,85 +21,88 @@ def get_latest_driver_manifest(query=""):
         lines = [line.strip() for line in text.splitlines() if line.strip()]
 
         q = query.lower().strip()
-        
-        # Automatically matches the current daily date layout dynamically (e.g., 06/26/2026)
-        today_str = datetime.now().strftime("%m/%d/%Y")
 
-        # 1. MANIFEST command (Provides Passenger Name + Driver Name & Number only)
+        # 🧱 Group raw text rows into independent trip list blocks cleanly
+        blocks = []
+        current_block = []
+        for line in lines:
+            # Every trip block on Limo Anywhere starts with a date pattern (MM/DD/YYYY)
+            if re.match(r'^\d{2}/\d{2}/\d{4}$', line):
+                if current_block:
+                    blocks.append(current_block)
+                current_block = [line]
+            else:
+                current_block.append(line)
+        if current_block:
+            blocks.append(current_block)
+
+        # 1. MANIFEST COMMAND (Returns every trip found on the page cleanly)
         if q in ["manifest", "all", "list"]:
             entries = []
-            i = 0
-            while i < len(lines):
-                # Restored the exact keyword scanning loop from your initial script
-                if any(p in lines[i] for p in ["Balletto", "McWater", "Pagliarulo", "Clev", "Kornilov", "Liam"]):
-                    pax = lines[i]
-                    driver = "N/A"
-                    phone = ""
-                    for j in range(i, min(i+30, len(lines))):
-                        if re.search(r'\(\d{3}\)', lines[j]):
-                            phone = lines[j]
-                            driver = lines[j-1] if j > 0 else "N/A"
-                            break
-                    entries.append(f"Pax: {pax}\nDriver: {driver} {phone}")
-                i += 1
-            return "\n\n---\n\n".join(entries[:25]) if entries else "No manifest entries found today."
+            for b in blocks:
+                driver = "N/A"
+                phone = ""
+                pax_name = "Unknown Passenger"
+                
+                for i, l in enumerate(b):
+                    if re.search(r'\(\d{3}\)', l):
+                        phone = l
+                        driver = b[i-1] if i > 0 else "N/A"
+                        # The passenger name usually occupies index position 4 in the block array layout
+                        if len(b) > 4:
+                            pax_name = b[4]
+                        break
+                entries.append(f"Pax: {pax_name}\nDriver: {driver} {phone}")
+            return "\n\n---\n\n".join(entries[:25]) if entries else "The manifest link is currently completely empty."
 
-        # 2. SHUTTLE command (Left untouched)
+        # 2. SHUTTLE COMMAND
         if "shuttle" in q:
             matches = []
-            current = []
-            for line in lines:
-                current.append(line)
-                if today_str in line or "Trip Total" in line:
-                    block = "\n".join(current)
-                    if any(s in block for s in ["Shuttle", "Standby", "Media", "PI", "DWC"]):
-                        service = next((l for l in current if any(s in l for s in ["Shutt", "Standby", "Media"])), "Shuttle")
-                        driver = "N/A"
-                        phone = ""
-                        for l in current:
-                            if re.search(r'\(\d{3}\)', l):
-                                phone = l
-                                driver = current[current.index(l)-1] if current.index(l) > 0 else "N/A"
-                                break
-                        matches.append(f"{service}\nDriver: {driver} {phone}")
-                    current = []
-            return "\n\n---\n\n".join(matches) if matches else "No shuttles found."
-
-        # 3. PAX NAME command (Provides Passenger Name + Departure Time + Driver Details only)
-        matches = []
-        current = []
-        for line in lines:
-            current.append(line)
-            if today_str in line or "Trip Total" in line:
-                block = "\n".join(current)
-                if q in block.lower():
-                    # Parse specific target rows out of the matched card block safely
+            for b in blocks:
+                block_text = "\n".join(b)
+                if any(s in block_text for s in ["Shuttle", "Standby", "Media", "PI", "DWC"]):
+                    service = next((l for l in b if any(s in l for s in ["Shuttle", "Standby", "Media"])), "Shuttle")
                     driver = "N/A"
                     phone = ""
-                    pax_name = "Passenger"
-                    pu_time = "N/A"
-                    
-                    # Extract the time layout entry (e.g., "09:26 PM")
-                    for l in current:
-                        if re.search(r'\d{2}:\d{2}\s*(?:AM|PM)', l, re.IGNORECASE):
-                            pu_time = l
+                    for i, l in enumerate(b):
                         if re.search(r'\(\d{3}\)', l):
                             phone = l
-                            driver = current[current.index(l)-1] if current.index(l) > 0 else "N/A"
-                    
-                    # Match name references directly within line indexes 
-                    for l in current:
-                        if q in l.lower() and not re.search(r'\(\d{3}\)', l) and l != driver:
-                            pax_name = l
+                            driver = b[i-1] if i > 0 else "N/A"
                             break
-                            
-                    matches.append(f"Pax: {pax_name}\nTime: {pu_time}\nDriver: {driver} {phone}")
-                current = []
+                    matches.append(f"{service}\nDriver: {driver} {phone}")
+            return "\n\n---\n\n".join(matches) if matches else "No shuttle rows found on this manifest page."
+
+        # 3. PAX NAME COMMAND (Matches ANY passenger name typed dynamically)
+        matches = []
+        for b in blocks:
+            block_text = "\n".join(b).lower()
+            if q in block_text:
+                driver = "N/A"
+                phone = ""
+                pu_time = "N/A"
+                pax_name = "Unknown Passenger"
+                
+                # Extract pickup timestamp string safely
+                for l in b:
+                    if re.search(r'\d{2}:\d{2}\s*(?:AM|PM)', l, re.IGNORECASE):
+                        pu_time = l
+                        break
+                
+                for i, l in enumerate(b):
+                    if re.search(r'\(\d{3}\)', l):
+                        phone = l
+                        driver = b[i-1] if i > 0 else "N/A"
+                        break
+                
+                if len(b) > 4:
+                    pax_name = b[4]
+                    
+                matches.append(f"Pax: {pax_name}\nTime: {pu_time}\nDriver: {driver} {phone}")
         
         if matches:
             return "\n\n---\n\n".join(matches)
         else:
-            return f"No driver or passenger found matching '{query}'."
+            return f"Could not find any trips matching the name '{query}' on the active manifest."
 
     except Exception as e:
         return f"System Fetch Error: {str(e)[:60]}"
@@ -110,13 +112,13 @@ def webhook():
     global CURRENT_MANIFEST_URL
     incoming_body = request.values.get('Body', '').strip()
     
-    # URL auto-update utility check
+    # Text "URL: https://..." to rewrite the live link instantly
     if incoming_body.lower().startswith("url:"):
         new_url = incoming_body[4:].strip()
         if new_url.startswith("http"):
             CURRENT_MANIFEST_URL = new_url
             resp = MessagingResponse()
-            resp.message("✅ Bot link updated successfully.")
+            resp.message("✅ Bot manifest link updated successfully.")
             return str(resp)
 
     resp = MessagingResponse()
@@ -126,4 +128,3 @@ def webhook():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
-

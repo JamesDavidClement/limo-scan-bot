@@ -6,7 +6,7 @@ import re
 
 app = Flask(__name__)
 
-# Primary active shared manifest URL link
+# Primary active shared manifest URL configuration link
 CURRENT_MANIFEST_URL = "https://mylimobiz.com"
 
 def get_latest_driver_manifest(query=""):
@@ -18,46 +18,44 @@ def get_latest_driver_manifest(query=""):
 
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # 🎯 Target the exact spreadsheet table ID from the page source
+        # Target the exact spreadsheet table ID from the page source code
         manifest_table = soup.find('table', {'id': 'AutoNumber2'})
         if not manifest_table:
-            return "Error: Could not locate the manifest data table layout."
+            return "Error: Could not locate the manifest data table layout structure."
 
         rows = manifest_table.find_all('tr')
         trips = []
 
         for row in rows:
-            # Gather text from each cell row, preserving line breaks for easy parsing
             cells = []
             for td in row.find_all('td'):
-                # Extract clean lines out of cell data blocks
                 cell_text = "\n".join([line.strip() for line in td.get_text(separator="\n").splitlines() if line.strip()])
                 cells.append(cell_text)
             
-            # Skip empty lines, headers, or corrupted rows (Valid data rows have exactly 7 columns)
-            if len(cells) != 7 or "pu date" in cells[0].lower():
+            # Skip empty lines or header definitions safely
+            if len(cells) != 7:
+                continue
+            if cells[0] and "pu date" in cells[0].lower():
                 continue
 
             # Column 1 (Index 1) contains "PU Time \n DO Time". Isolate the first line for PU Time.
             time_lines = cells[1].splitlines()
             pu_time = time_lines[0] if time_lines else "N/A"
 
-            # Column 3 (Index 3) contains "Passenger(s) \n Trip Total". Isolate the first line for the Pax/Shuttle label.
+            # Column 3 (Index 3) contains "Passenger(s) \n Trip Total". Isolate the first line for the Pax label.
             pax_lines = cells[3].splitlines()
             pax_name = pax_lines[0] if pax_lines else "Blank"
 
-            # Column 6 (Index 6) contains "Driver Name \n Phone Number". Separate them clearly.
+            # Column 6 (Index 6) contains "Driver Name \n Phone Number".
             driver_lines = cells[6].splitlines()
             driver_name = "Unassigned"
             driver_phone = ""
             
             if driver_lines:
                 driver_name = driver_lines[0]
-                # Look for a phone number on the secondary line if available
                 if len(driver_lines) > 1 and re.search(r'\(\d{3}\)', driver_lines[1]):
                     driver_phone = driver_lines[1]
                 elif re.search(r'\(\d{3}\)', driver_lines[0]):
-                    # If it's single line but has a phone number
                     phone_match = re.search(r'\(\d{3}\)\s*\d{3}-\d{4}', driver_name)
                     if phone_match:
                         driver_phone = phone_match.group(0)
@@ -72,7 +70,7 @@ def get_latest_driver_manifest(query=""):
 
         q = query.lower().strip()
 
-        # 1. MANIFEST COMMAND (Short list of Pax Name + Driver Name & Number only)
+        # 1. MANIFEST COMMAND (Concise list format)
         if q in ["manifest", "all", "list"]:
             entries = []
             for t in trips:
@@ -105,8 +103,11 @@ def get_latest_driver_manifest(query=""):
 def webhook():
     global CURRENT_MANIFEST_URL
     incoming_body = request.values.get('Body', '').strip()
+    incoming_sender = request.values.get('From', 'UNKNOWN_NUMBER')
     
-    # Text "URL: https://..." to update links dynamically over text
+    # 🚨 Crucial Move: Moved print line right to the top so it logs immediately when Twilio hits the route
+    print(f"Incoming SMS from {incoming_sender}: {incoming_body}")
+    
     if incoming_body.lower().startswith("url:"):
         new_url = incoming_body[4:].strip()
         if new_url.startswith("http"):

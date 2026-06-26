@@ -2,8 +2,8 @@ from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import requests
 from bs4 import BeautifulSoup
-import re
 from datetime import datetime
+import re
 
 app = Flask(__name__)
 
@@ -16,100 +16,72 @@ def log_incoming_activity(sender, message_body):
     except Exception as e:
         print(f"❌ Logging error: {e}")
 
-def get_latest_driver_manifest(query=""):
-    try:
-        url = "https://mylimobiz.com"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(url, headers=headers, timeout=15)
-        resp.raise_for_status()
+def fetch_manifest():
+    url = "https://reports.mylimobiz.com/SharedReport/CC395C73-8F55-4FCE-A397-BC2866AD0C55"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    resp = requests.get(url, headers=headers, timeout=15)
+    resp.raise_for_status()
+    return BeautifulSoup(resp.text, 'html.parser')
 
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        text = soup.get_text(separator="\n", strip=True)
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
+def parse_manifest_rows(soup):
+    """Extract rows from the main data table"""
+    table = soup.find('table', id='AutoNumber2')  # The big manifest table
+    if not table:
+        return []
+    
+    rows = []
+    data_rows = table.find_all('tr')[1:]  # Skip header row
+    
+    for tr in data_rows:
+        tds = tr.find_all('td')
+        if len(tds) < 7:
+            continue
+            
+        row = {
+            'pu_date_conf': tds[0].get_text(strip=True).replace('\n', ' '),
+            'pu_time_do': tds[1].get_text(strip=True).replace('\n', ' '),
+            'routing': tds[2].get_text(strip=True),
+            'passenger_trip': tds[3].get_text(strip=True).replace('\n', ' | '),
+            'phone_service': tds[4].get_text(strip=True).replace('\n', ' | '),
+            'vehicle': tds[5].get_text(strip=True),
+            'driver': tds[6].get_text(strip=True).replace('\n', ' ')
+        }
+        rows.append(row)
+    return rows
 
-        q = query.lower().strip()
-        today_str = datetime.now().strftime("%m/%d/%Y")
+def get_shuttles(rows):
+    """Command: shuttle"""
+    shuttles = [row for row in rows if any(x in row['passenger_trip'].lower() for x in ['shuttle', 'standby', 'media', 'pi', 'dwc'])]
+    if not shuttles:
+        return "No shuttles found for today."
+    
+    response = []
+    for row in shuttles:
+        response.append(f"🚌 {row['passenger_trip']}\n⏰ {row['pu_time_do']}\n👤 {row['driver']}")
+    return "\n\n---\n\n".join(response)
 
-        # 1. Full Manifest (UNTOUCHED BASE)
-        if q in ["manifest", "all", "list"]:
-            entries = []
-            i = 0
-            while i < len(lines):
-                if any(p in lines[i] for p in ["Balletto", "McWater", "Pagliarulo", "Clev"]):
-                    pax = lines[i]
-                    service = next((l for l in lines[i:i+30] if any(s in l for s in ["Shu"])), "N/A")
-                    driver = "N/A"
-                    phone = ""
-                    for j in range(i, min(i+30, len(lines))):
-                        if re.search(r'\(\d{3}\)', lines[j]):
-                            phone = lines[j]
-                            driver = lines[j-1] if j > 0 else "N/A"
-                            break
-                    entries.append(f"{pax}\n{service}\n{driver} {phone}\n")
-                i += 1
-            return "\n".join(entries[:25]) if entries else "No manifest entries found today."
+def get_manifest_summary(rows, limit=20):
+    """Command: manifest"""
+    if not rows:
+        return "No manifest entries found today."
+    
+    response = []
+    for row in rows[:limit]:
+        response.append(f"📋 {row['passenger_trip']}\n⏰ {row['pu_time_do']}\n👤 {row['driver']}")
+    return "\n\n---\n\n".join(response)
 
-        # 2. SHUTTLE command (UNTOUCHED BASE)
-        if "shuttle" in q:
-            matches = []
-            current = []
-            for line in lines:
-                current.append(line)
-                if today_str in line or "Trip Total" in line:
-                    block = "\n".join(current)
-                    if any(s in block for s in ["Shuttle", "Standby", "Media", "PI", "DWC"]):
-                        service = next((l for l in current if any(s in l for s in ["Shutt"])), "N/A")
-                        driver = "N/A"
-                        phone = ""
-                        for l in current:
-                            if re.search(r'\(\d{3}\)', l):
-                                phone = l
-                                driver = current[current.index(l)-1] if current.index(l) > 0 else "N/A"
-                                break
-                        matches.append(f"{service}\n{driver} {phone}")
-                    current = []
-            return "\n\n---\n\n".join(matches) if matches else f"No shuttles found listed for {today_str}."
-
-        # 3. FIXED PAX NAME command (Pulls strictly from the 3 specified columns)
-        matches = []
-        current = []
-        for line in lines:
-            current.append(line)
-            if today_str in line or "Trip Total" in line:
-                block = "\n".join(current)
-                if q in block.lower():
-                    driver = "N/A"
-                    phone = ""
-                    pu_time = "N/A"
-                    pax_name = "Unknown Passenger"
-                    
-                    # Lock data markers for Time and Driver columns dynamically
-                    for l in current:
-                        # Column 1: Time Match
-                        if re.search(r'\d{2}:\d{2}\s*(?:AM|PM)', l, re.IGNORECASE):
-                            pu_time = l
-                        # Column 6: Driver Phone Match
-                        if re.search(r'\(\d{3}\)', l):
-                            phone = l
-                            driver = current[current.index(l)-1] if current.index(l) > 0 else "N/A"
-                    
-                    # Column 3: Locate any row item matching your search that isn't a timestamp or driver
-                    for l in current:
-                        if q in l.lower() and not re.search(r'\(\d{3}\)', l) and l != driver and ":" not in l:
-                            pax_name = l
-                            break
-                            
-                    # Clean format template containing ONLY your 3 required columns
-                    matches.append(f"Pax: {pax_name}\nTime: {pu_time}\nDriver: {driver} {phone}")
-                current = []
-                
-        if matches:
-            return "\n\n---\n\n".join(matches)
-        else:
-            return f"No records matching '{query}' found for today."
-
-    except Exception as e:
-        return f"System Fetch Error: {str(e)[:60]}"
+def find_by_passenger(rows, query):
+    """Command: passenger name search"""
+    q = query.lower().strip()
+    matches = [row for row in rows if q in row['passenger_trip'].lower() or q in row['routing'].lower()]
+    
+    if not matches:
+        return f"No records found for '{query}' today."
+    
+    response = []
+    for row in matches:
+        response.append(f"👤 {row['passenger_trip']}\n⏰ {row['pu_time_do']}\n👤 {row['driver']}")
+    return "\n\n---\n\n".join(response)
 
 @app.route("/webhook", methods=['GET', 'POST'])
 def webhook():
@@ -120,7 +92,24 @@ def webhook():
     print(f"Incoming SMS from {incoming_sender}: {incoming_body}")
     
     resp = MessagingResponse()
-    info = get_latest_driver_manifest(incoming_body)
+    
+    try:
+        soup = fetch_manifest()
+        rows = parse_manifest_rows(soup)
+        
+        body_lower = incoming_body.lower().strip()
+        
+        if body_lower in ["manifest", "all", "list"]:
+            info = get_manifest_summary(rows)
+        elif "shuttle" in body_lower:
+            info = get_shuttles(rows)
+        else:
+            # Default: treat as passenger name search
+            info = find_by_passenger(rows, incoming_body)
+            
+    except Exception as e:
+        info = f"System Fetch Error: {str(e)[:80]}"
+    
     resp.message(info)
     return str(resp)
 

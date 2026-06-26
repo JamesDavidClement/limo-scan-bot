@@ -3,12 +3,11 @@ from twilio.twiml.messaging_response import MessagingResponse
 import requests
 from bs4 import BeautifulSoup
 import re
-from datetime import datetime  # Added to auto-fix the date issue
+from datetime import datetime
 
 app = Flask(__name__)
 
 def log_incoming_activity(sender, message_body):
-    """Generates a text log file tracking who texts your bot and when."""
     try:
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         log_entry = f"[{timestamp}] FROM: {sender} | TEXT: '{message_body}'\n"
@@ -19,7 +18,8 @@ def log_incoming_activity(sender, message_body):
 
 def get_latest_driver_manifest(query=""):
     try:
-        url = "https://mylimobiz.com" # (URL truncated safely)
+        # 🔗 UPDATED: Pointing directly to your active live report link
+        url = "https://reports.mylimobiz.com/SharedReport/CC395C73-8F55-4FCE-A397-BC2866AD0C55"
         headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
@@ -30,7 +30,7 @@ def get_latest_driver_manifest(query=""):
 
         q = query.lower().strip()
         
-        # ✅ Automatically matches today's date in MM/DD/YYYY layout dynamically
+        # 📆 Auto-calculates today's date structure dynamically
         today_str = datetime.now().strftime("%m/%d/%Y")
 
         # 1. Full Manifest
@@ -50,7 +50,7 @@ def get_latest_driver_manifest(query=""):
                             break
                     entries.append(f"{pax}\n{service}\n{driver} {phone}\n")
                 i += 1
-            return "\n".join(entries[:25])
+            return "\n".join(entries[:25]) if entries else "No manifest entries found today."
 
         # 2. SHUTTLE command
         if "shuttle" in q:
@@ -58,7 +58,6 @@ def get_latest_driver_manifest(query=""):
             current = []
             for line in lines:
                 current.append(line)
-                # ✅ Bug Fixed: Evaluates dynamic today_str date loop directly
                 if today_str in line or "Trip Total" in line:
                     block = "\n".join(current)
                     if any(s in block for s in ["Shuttle", "Standby", "Media", "PI", "DWC"]):
@@ -72,14 +71,13 @@ def get_latest_driver_manifest(query=""):
                                 break
                         matches.append(f"{service}\n{driver} {phone}")
                     current = []
-            return "\n\n---\n\n".join(matches) if matches else "No shuttles found."
+            return "\n\n---\n\n".join(matches) if matches else f"No shuttles found listed for {today_str}."
 
         # 3. PAX NAME command (only driver info)
         matches = []
         current = []
         for line in lines:
             current.append(line)
-            # ✅ Bug Fixed: Evaluates dynamic today_str date loop directly
             if today_str in line or "Trip Total" in line:
                 block = "\n".join(current)
                 if q in block.lower():
@@ -95,18 +93,16 @@ def get_latest_driver_manifest(query=""):
         if matches:
             return "\n\n".join(matches)
         else:
-            return f"No driver found for '{query}'."
+            return f"No records matching '{query}' found for today."
 
     except Exception as e:
-        return f"Error: {str(e)[:80]}"
+        return f"System Fetch Error: {str(e)[:60]}"
 
 @app.route("/webhook", methods=['GET', 'POST'])
 def webhook():
-    # Capture message context details safely
     incoming_body = request.values.get('Body', '').strip()
     incoming_sender = request.values.get('From', 'UNKNOWN_NUMBER')
     
-    # 📝 Save event metrics into text logger automatically
     log_incoming_activity(incoming_sender, incoming_body)
     print(f"Incoming SMS from {incoming_sender}: {incoming_body}")
     
@@ -116,6 +112,4 @@ def webhook():
     return str(resp)
 
 if __name__ == "__main__":
-    print("🚀 Bot running...")
-    # Bound explicitly to all internal interfaces (0.0.0.0) so tools like ngrok map perfectly
     app.run(host="0.0.0.0", port=5000, debug=True)

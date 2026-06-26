@@ -3,119 +3,109 @@ from twilio.twiml.messaging_response import MessagingResponse
 import requests
 from bs4 import BeautifulSoup
 import re
+from datetime import datetime
 
 app = Flask(__name__)
 
-# Primary active shared manifest URL configuration link
-CURRENT_MANIFEST_URL = "https://mylimobiz.com"
+def log_incoming_activity(sender, message_body):
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] FROM: {sender} | TEXT: '{message_body}'\n"
+        with open("sms_bot_activity.log", "a", encoding="utf-8") as f:
+            f.write(log_entry)
+    except Exception as e:
+        print(f"❌ Logging error: {e}")
 
 def get_latest_driver_manifest(query=""):
-    global CURRENT_MANIFEST_URL
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        resp = requests.get(CURRENT_MANIFEST_URL, headers=headers, timeout=15)
+        # 🔗 UPDATED: Pointing directly to your active live report link
+        url = "https://reports.mylimobiz.com/SharedReport/CC395C73-8F55-4FCE-A397-BC2866AD0C55"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(url, headers=headers, timeout=15)
         resp.raise_for_status()
 
         soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        # Target the exact spreadsheet table ID from the page source code
-        manifest_table = soup.find('table', {'id': 'AutoNumber2'})
-        if not manifest_table:
-            return "Error: Could not locate the manifest data table layout structure."
-
-        rows = manifest_table.find_all('tr')
-        trips = []
-
-        for row in rows:
-            cells = []
-            for td in row.find_all('td'):
-                cell_text = "\n".join([line.strip() for line in td.get_text(separator="\n").splitlines() if line.strip()])
-                cells.append(cell_text)
-            
-            # Skip empty lines or header definitions safely
-            if len(cells) != 7:
-                continue
-            if cells[0] and "pu date" in cells[0].lower():
-                continue
-
-            # Column 1 (Index 1) contains "PU Time \n DO Time". Isolate the first line for PU Time.
-            time_lines = cells[1].splitlines()
-            pu_time = time_lines[0] if time_lines else "N/A"
-
-            # Column 3 (Index 3) contains "Passenger(s) \n Trip Total". Isolate the first line for the Pax label.
-            pax_lines = cells[3].splitlines()
-            pax_name = pax_lines[0] if pax_lines else "Blank"
-
-            # Column 6 (Index 6) contains "Driver Name \n Phone Number".
-            driver_lines = cells[6].splitlines()
-            driver_name = "Unassigned"
-            driver_phone = ""
-            
-            if driver_lines:
-                driver_name = driver_lines[0]
-                if len(driver_lines) > 1 and re.search(r'\(\d{3}\)', driver_lines[1]):
-                    driver_phone = driver_lines[1]
-                elif re.search(r'\(\d{3}\)', driver_lines[0]):
-                    phone_match = re.search(r'\(\d{3}\)\s*\d{3}-\d{4}', driver_name)
-                    if phone_match:
-                        driver_phone = phone_match.group(0)
-                        driver_name = driver_name.replace(driver_phone, "").strip(" -,")
-
-            trips.append({
-                "time": pu_time,
-                "pax": pax_name,
-                "driver": driver_name,
-                "phone": driver_phone
-            })
+        text = soup.get_text(separator="\n", strip=True)
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
 
         q = query.lower().strip()
+        
+        # 📆 Auto-calculates today's date structure dynamically
+        today_str = datetime.now().strftime("%m/%d/%Y")
 
-        # 1. MANIFEST COMMAND (Concise list format)
+        # 1. Full Manifest
         if q in ["manifest", "all", "list"]:
             entries = []
-            for t in trips:
-                entries.append(f"Pax: {t['pax']}\nDriver: {t['driver']} {t['phone']}")
-            return "\n\n---\n\n".join(entries[:25]) if entries else "The active manifest grid is empty."
+            i = 0
+            while i < len(lines):
+                if any(p in lines[i] for p in ["Balletto", "McWater", "Pagliarulo", "Clev"]):
+                    pax = lines[i]
+                    service = next((l for l in lines[i:i+30] if any(s in l for s in ["Shu"])), "N/A")
+                    driver = "N/A"
+                    phone = ""
+                    for j in range(i, min(i+30, len(lines))):
+                        if re.search(r'\(\d{3}\)', lines[j]):
+                            phone = lines[j]
+                            driver = lines[j-1] if j > 0 else "N/A"
+                            break
+                    entries.append(f"{pax}\n{service}\n{driver} {phone}\n")
+                i += 1
+            return "\n".join(entries[:25]) if entries else "No manifest entries found today."
 
-        # 2. SHUTTLE COMMAND (Extracts rows containing shuttle identifiers)
+        # 2. SHUTTLE command
         if "shuttle" in q:
             matches = []
-            for t in trips:
-                if any(s in t["pax"].lower() for s in ["shuttle", "standby", "media", "pi", "dwc"]):
-                    matches.append(f"{t['pax']}\nDriver: {t['driver']} {t['phone']}")
-            return "\n\n---\n\n".join(matches) if matches else "No shuttle runs found on the current manifest."
+            current = []
+            for line in lines:
+                current.append(line)
+                if today_str in line or "Trip Total" in line:
+                    block = "\n".join(current)
+                    if any(s in block for s in ["Shuttle", "Standby", "Media", "PI", "DWC"]):
+                        service = next((l for l in current if any(s in l for s in ["Shutt"])), "N/A")
+                        driver = "N/A"
+                        phone = ""
+                        for l in current:
+                            if re.search(r'\(\d{3}\)', l):
+                                phone = l
+                                driver = current[current.index(l)-1] if current.index(l) > 0 else "N/A"
+                                break
+                        matches.append(f"{service}\n{driver} {phone}")
+                    current = []
+            return "\n\n---\n\n".join(matches) if matches else f"No shuttles found listed for {today_str}."
 
-        # 3. PAX NAME COMMAND (Extracts Pax Name + Departure Time + Driver Details only)
+        # 3. PAX NAME command (only driver info)
         matches = []
-        for t in trips:
-            if q in t["pax"].lower():
-                matches.append(f"Pax: {t['pax']}\nTime: {t['time']}\nDriver: {t['driver']} {t['phone']}")
-        
+        current = []
+        for line in lines:
+            current.append(line)
+            if today_str in line or "Trip Total" in line:
+                block = "\n".join(current)
+                if q in block.lower():
+                    driver = "N/A"
+                    phone = ""
+                    for l in current:
+                        if re.search(r'\(\d{3}\)', l):
+                            phone = l
+                            driver = current[current.index(l)-1] if current.index(l) > 0 else "N/A"
+                            break
+                    matches.append(f"Driver: {driver}\n{phone}")
+                current = []
         if matches:
-            return "\n\n---\n\n".join(matches)
+            return "\n\n".join(matches)
         else:
-            return f"No records matching '{query}' found on the current manifest."
+            return f"No records matching '{query}' found for today."
 
     except Exception as e:
-        return f"Grid Fetch Error: {str(e)[:60]}"
+        return f"System Fetch Error: {str(e)[:60]}"
 
 @app.route("/webhook", methods=['GET', 'POST'])
 def webhook():
-    global CURRENT_MANIFEST_URL
     incoming_body = request.values.get('Body', '').strip()
     incoming_sender = request.values.get('From', 'UNKNOWN_NUMBER')
     
-    # 🚨 Crucial Move: Moved print line right to the top so it logs immediately when Twilio hits the route
+    log_incoming_activity(incoming_sender, incoming_body)
     print(f"Incoming SMS from {incoming_sender}: {incoming_body}")
     
-    if incoming_body.lower().startswith("url:"):
-        new_url = incoming_body[4:].strip()
-        if new_url.startswith("http"):
-            CURRENT_MANIFEST_URL = new_url
-            resp = MessagingResponse()
-            resp.message("✅ Bot link updated successfully.")
-            return str(resp)
-
     resp = MessagingResponse()
     info = get_latest_driver_manifest(incoming_body)
     resp.message(info)
